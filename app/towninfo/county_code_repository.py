@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from typing import Dict, Optional, Tuple
 
 ROOT_DIR = os.path.dirname(__file__)
-CACHE_DIR = os.path.join(ROOT_DIR, 'cache')
+CACHE_DIR = os.path.join(ROOT_DIR, "..", "..", "cache")
 
 COUNTY_CODE_API = "https://api.nlsc.gov.tw/other/ListCounty"
 COUNTY_FILE_NAME = "county.json"

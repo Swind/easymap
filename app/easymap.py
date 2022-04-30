@@ -4,26 +4,17 @@ import aiohttp
 import re
 import os
 
-from towninfo.town_code_repository import TownCodeRepository
+from .towninfo.town_code_repository import TownCodeRepository
+from .model import LandNumber
 
 DEFAULT_TIMEOUT = 30  # 30 seconds
 
 EASYMAP_BASE_URL = "https://easymap.land.moi.gov.tw"
-PROXIES = {"https": "proxy:5566"}
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-EASYMAP_CACHE_DIR = os.path.join(ROOT_DIR, "cache")
+EASYMAP_CACHE_DIR = os.path.join(ROOT_DIR, "..", "cache")
 
 TownCodeRepo = TownCodeRepository(EASYMAP_CACHE_DIR)
-
-
-class LandNumber:
-    def __init__(self, name, code):
-        self.name = name
-        self.code = code
-
-    def __str__(self):
-        return f"{self.name}({self.code})"
 
 
 class WebRequestError(RuntimeError):
@@ -143,20 +134,3 @@ class EasyMapSession:
         )
 
         return land_number
-
-
-async def main(x: float, y: float):
-    async with EasyMapSession() as session:
-        land_number = await session.get_land_number(x, y)
-        print(land_number)
-
-if __name__ == "__main__":
-    import sys
-    import asyncio
-
-    if len(sys.argv) != 3:
-        print("Usage: easymap.py <wgs84x> <wgs84y>")
-        sys.exit(-1)
-    x, y = sys.argv[1:3]
-
-    asyncio.run(main(float(x), float(y)))

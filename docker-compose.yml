@@ -1,0 +1,21 @@
+version: '3.7'
+
+services:
+  server:
+    build: .
+    environment:
+      EASYMAP_PROXY: "http://proxy:5566"
+    ports:
+      - 5000:5000
+
+  proxy:
+    image: mattes/rotating-proxy:latest
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "2m"
+    ports:
+      - 5566:5566
+    volumes:
+      - ./torrc:/etc/tor/torrc
