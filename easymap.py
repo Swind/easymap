@@ -1,14 +1,30 @@
-#!/usr/bin/env python
+from typing import Optional
 
-import requests
+import aiohttp
 import re
+import os
 
-import towninfo
+from towninfo.town_code_repository import TownCodeRepository
 
-DEFAULT_TIMEOUT = 30 # 5 seconds
+DEFAULT_TIMEOUT = 30  # 30 seconds
 
 EASYMAP_BASE_URL = "https://easymap.land.moi.gov.tw"
 PROXIES = {"https": "proxy:5566"}
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+EASYMAP_CACHE_DIR = os.path.join(ROOT_DIR, "cache")
+
+TownCodeRepo = TownCodeRepository(EASYMAP_CACHE_DIR)
+
+
+class LandNumber:
+    def __init__(self, name, code):
+        self.name = name
+        self.code = code
+
+    def __str__(self):
+        return f"{self.name}({self.code})"
+
 
 class WebRequestError(RuntimeError):
     def __init__(self, message, status_code, response_body):
@@ -17,76 +33,130 @@ class WebRequestError(RuntimeError):
         self.response_body = response_body
 
 
-def get_session(timeout=DEFAULT_TIMEOUT, proxies=PROXIES):
-    easymap_url = EASYMAP_BASE_URL + "/Index"
-    sess = requests.Session()
-    if proxies:
-        sess.proxies.update(PROXIES)
-    # XXX don't need this?
-    sess.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.71 Safari/537.36"})
-    resp = sess.get(easymap_url, timeout=timeout)
-    if "JSESSIONID" not in sess.cookies:
-        raise WebRequestError("Failed getting session from easymap", resp.status_code, resp.text)
-    return sess
+class EasyMapSession:
+    def __init__(self, timeout: int = DEFAULT_TIMEOUT, proxy: Optional[str] = None):
+        self._proxy = proxy
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout))
+        self._headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.71 Safari/537.36"
+        }
+
+    async def __aenter__(self):
+        await self._init_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def close(self):
+        await self._session.close()
+
+    async def _init_session(self):
+        easymap_url = EASYMAP_BASE_URL + "/Index"
+
+        resp = await self._session.get(easymap_url)
+        if "JSESSIONID" not in self._session.cookie_jar.filter_cookies(easymap_url):
+            raise WebRequestError(
+                "Failed getting session from easymap",
+                resp.status,
+                await resp.text())
+
+    async def _get_point_city(self, x: float, y: float):
+        point_city_url = EASYMAP_BASE_URL + "/Query_json_getPointCity"
+        data = {"wgs84x": x, "wgs84y": y}
+
+        async with self._session.post(
+            point_city_url,
+            data=data,
+            proxy=self._proxy,
+            raise_for_status=True
+        ) as resp:
+            json = await resp.json()
+            if "cityCode" not in json:
+                text = await resp.text()
+                raise WebRequestError(
+                    f"Failed parsing city code text:{text}",
+                    resp.status,
+                    text
+                )
+
+            return json["cityCode"]
+
+    async def _get_token(self):
+        set_token_url = EASYMAP_BASE_URL + "/pages/setToken.jsp"
+        token_re = re.compile(
+            '<input type="hidden" name="(.*?)" value="(.*?)" />')
+
+        resp = await self._session.post(
+            set_token_url,
+            proxy=self._proxy,
+            raise_for_status=True
+        )
+
+        data = await resp.text()
+        token = dict([(m.group(1), m.group(2))
+                      for m in token_re.finditer(data)])
+
+        if "token" not in token:
+            raise WebRequestError("Failed parsing token",
+                                  resp.status, data)
+        return token
+
+    async def _get_door_info(self, x, y, city_code, token):
+        get_door_info_url = EASYMAP_BASE_URL + "/Door_json_getDoorInfoByXY"
+        data = {"city": city_code, "coordX": x, "coordY": y, **token}
+
+        resp = await self._session.post(
+            get_door_info_url,
+            data=data,
+            proxy=self._proxy,
+            raise_for_status=True
+        )
+        try:
+            return await resp.json()
+        except Exception:
+            raise WebRequestError("Failed parsing door info",
+                                  resp.staus, await resp.text())
+
+    async def get_land_number(self, x, y) -> LandNumber:
+        """
+        Get land number by WGS84 coordinates.
+
+        since the easymap API doesn't provide townname, we then insert a townname field by looking up in xml files in ./towncode downloaded from https://api.nlsc.gov.tw/other/ListTown1/{A-Z}
+        """
+        city_code = await self._get_point_city(x, y)
+        town_code = await TownCodeRepo.load(city_code)
+        if not town_code:
+            raise RuntimeError(f"Failed to find town code for {city_code}")
+
+        token = await self._get_token()
+        result = await self._get_door_info(
+            x, y,
+            city_code,
+            token
+        )
+
+        land_number = LandNumber(
+            name=town_code.code2name(result["towncode"]),
+            code=result["towncode"]
+        )
+
+        return land_number
 
 
-def get_point_city(sess, x, y, timeout=DEFAULT_TIMEOUT):
-    point_city_url = EASYMAP_BASE_URL + "/Query_json_getPointCity"
-    data = {"wgs84x": x, "wgs84y": y}
-    resp = sess.post(point_city_url, data=data, timeout=timeout)
-    if resp.status_code != requests.codes.ok:
-        raise WebRequestError(f"Failed getting city code status_code:{resp.status_code}, text:{resp.text}")
-    try:
-        return resp.json()["cityCode"]
-    except Exception:
-        raise WebRequestError(f"Failed parsing city code text:{resp.text}", resp.text)
-
-
-def get_token(sess, timeout=DEFAULT_TIMEOUT):
-    set_token_url = EASYMAP_BASE_URL + "/pages/setToken.jsp"
-    token_re = re.compile('<input type="hidden" name="(.*?)" value="(.*?)" />')
-    resp = sess.post(set_token_url, timeout=timeout)
-    if resp.status_code != requests.codes.ok:
-        raise WebRequestError("Failed getting token", resp.status_code, resp.text)
-    token = dict([(m.group(1), m.group(2)) for m in token_re.finditer(resp.text)])
-    if "token" not in token:
-        raise WebRequestError("Failed parsing token", resp.status_code, resp.text)
-    return token
-
-
-def get_door_info(sess, x, y, cityCode, token, timeout=DEFAULT_TIMEOUT):
-    get_door_info_url = EASYMAP_BASE_URL + "/Door_json_getDoorInfoByXY"
-    data = {"city": cityCode, "coordX": x, "coordY": y, **token}
-
-    resp = sess.post(get_door_info_url, data=data, timeout=timeout)
-    if resp.status_code != requests.codes.ok:
-        raise WebRequestError("Failed getting door info", resp.status_code, resp.text)
-    try:
-        return resp.json()
-    except Exception:
-        raise WebRequestError("Failed parsing door info", resp.status_code, resp.text)
-
-
-def get_land_number(x, y, timeout=DEFAULT_TIMEOUT, proxies=PROXIES):
-    """
-    Get land number by WGS84 coordinates.
-
-    since the easymap API doesn't provide townname, we then insert a townname field by looking up in xml files in ./towncode downloaded from https://api.nlsc.gov.tw/other/ListTown1/{A-Z}
-    """
-    sess = get_session(timeout=timeout, proxies=proxies)
-    cityCode = get_point_city(sess, x=x, y=y, timeout=timeout)
-    token = get_token(sess,timeout=timeout)
-    land_number = get_door_info(sess, x=x, y=y, cityCode=cityCode, token=token, timeout=timeout)
-    sess.close()
-    land_number["townname"] = towninfo.code2name.get(land_number["towncode"], "")
-    return land_number
-
+async def main(x: float, y: float):
+    async with EasyMapSession() as session:
+        land_number = await session.get_land_number(x, y)
+        print(land_number)
 
 if __name__ == "__main__":
     import sys
+    import asyncio
 
     if len(sys.argv) != 3:
         print("Usage: easymap.py <wgs84x> <wgs84y>")
         sys.exit(-1)
     x, y = sys.argv[1:3]
-    print(get_land_number(x=x, y=y, proxies=None))
+
+    asyncio.run(main(float(x), float(y)))

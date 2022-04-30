@@ -86,7 +86,6 @@ class TownCodeRepository:
             }))
 
     async def download_town_code(self, county_code: str) -> Tuple[Dict[str, str], Dict[str, str]]:
-        print(TOWN_CODE_API)
         async with aiohttp.request("GET", TOWN_CODE_API.format(county_code=county_code)) as resp:
             root = ET.fromstring(await resp.text())
 
