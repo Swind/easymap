@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 class TownCode:
+    """
+    town code <-> town name.
+    """
+
     def __init__(self, county_code: str,
                  code_name_map: Dict[str, str],
                  name_code_map: Dict[str, str]):
@@ -31,7 +35,6 @@ class TownCode:
 
     def name2code(self, name: str) -> Optional[str]:
         return self.name_code_map.get(name)
-
 
 class TownCodeRepository:
     def __init__(self, cache_dir: Optional[str] = None):

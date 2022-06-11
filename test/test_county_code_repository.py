@@ -1,5 +1,5 @@
 import os
-from ..towninfo.county_code_repository import CountyCodeRepository
+from easymap.app.towninfo.county_code_repository import CountyCodeRepository
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
